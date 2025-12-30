@@ -15,12 +15,31 @@ import uvicorn
 from facefusion import state_manager, logger
 from facefusion.args import apply_args
 from facefusion.jobs import job_manager, job_store
-from facefusion.setup_args import setup_args
-from facefusion.core import process_headless_v2
+from facefusion.setup_args import setup_args, gen_faceswapper_model_args
+from facefusion.core import process_headless
+from enum import Enum
+from fastapi import Query
+
+class FaceSwapperModel(str, Enum):
+    """
+    人脸替换模型（Face Swapper Model）
+    - inswapper_128：小尺寸模型，速度快
+    - inswapper_128_fp16：FP16 版本，显存占用低
+    - hyperswap_1a_256：HyperSwap 快速模型（默认）
+    - hyperswap_1b_256：改进肤色与光照
+    - hyperswap_1c_256：HyperSwap 稳定高质量版本
+    """
+    inswapper_128 = "inswapper_128"
+    inswapper_128_fp16 = "inswapper_128_fp16"
+    hyperswap_1a_256 = "hyperswap_1a_256"
+    hyperswap_1b_256 = "hyperswap_1b_256"
+    hyperswap_1c_256 = "hyperswap_1c_256"
+
+
 
 
 # =============== FastAPI ===============
-app = FastAPI(title="FaceFusion API")
+app = FastAPI(title="Smart Image AI API")
 
 # 创建临时目录
 TEMP_DIR = Path("./temp")
@@ -30,19 +49,14 @@ TEMP_DIR.mkdir(exist_ok=True)
 # -------- 启动初始化 --------
 @app.on_event("startup")
 def startup():
-    print("🔥 Initializing facefusion ...")
+    print("🔥 Initializing Smart Image ...")
 
-    job_keys = ['config_path', 'temp_path', 'jobs_path', 'execution_device_id', 'execution_providers', 'execution_thread_count', 'execution_queue_count', 'download_providers', 'video_memory_strategy', 'system_memory_limit', 'log_level']
-    step_keys = ['source_paths', 'target_path', 'output_path', 'face_detector_model', 'face_detector_angles', 'face_detector_size', 'face_detector_score', 'face_landmarker_model', 'face_landmarker_score', 'face_selector_mode', 'face_selector_order', 'face_selector_gender', 'face_selector_race', 'face_selector_age_start', 'face_selector_age_end', 'reference_face_position', 'reference_face_distance', 'reference_frame_number', 'face_occluder_model', 'face_parser_model', 'face_mask_types', 'face_mask_areas', 'face_mask_regions', 'face_mask_blur', 'face_mask_padding', 'trim_frame_start', 'trim_frame_end', 'temp_frame_format', 'keep_temp', 'output_image_quality', 'output_image_resolution', 'output_audio_encoder', 'output_audio_quality', 'output_audio_volume', 'output_video_encoder', 'output_video_preset', 'output_video_quality', 'output_video_resolution', 'output_video_fps', 'processors', 'age_modifier_model', 'age_modifier_direction', 'deep_swapper_model', 'deep_swapper_morph', 'expression_restorer_model', 'expression_restorer_factor', 'face_debugger_items', 'face_editor_model', 'face_editor_eyebrow_direction', 'face_editor_eye_gaze_horizontal', 'face_editor_eye_gaze_vertical', 'face_editor_eye_open_ratio', 'face_editor_lip_open_ratio', 'face_editor_mouth_grim', 'face_editor_mouth_pout', 'face_editor_mouth_purse', 'face_editor_mouth_smile', 'face_editor_mouth_position_horizontal', 'face_editor_mouth_position_vertical', 'face_editor_head_pitch', 'face_editor_head_yaw', 'face_editor_head_roll', 'face_enhancer_model', 'face_enhancer_blend', 'face_enhancer_weight', 'face_swapper_model', 'face_swapper_pixel_boost', 'frame_colorizer_model', 'frame_colorizer_blend', 'frame_colorizer_size', 'frame_enhancer_model', 'frame_enhancer_blend', 'lip_syncer_model', 'lip_syncer_weight']
-
+    defaults = setup_args()
+    job_keys = list(defaults.keys())
+    step_keys = list(defaults.keys())
     try:
         job_store.register_job_keys(job_keys)
         job_store.register_step_keys(step_keys)
-    except:
-        pass
-
-    defaults = setup_args()
-    try:
         apply_args(defaults, state_manager.init_item)
     except:
         pass
@@ -60,15 +74,25 @@ def startup():
         state_manager.init_item("jobs_path", default_path)
         job_manager.init_jobs(default_path)
 
-    print("✅ FaceFusion Initialized!")
+    print("✅ Smart Image Initialized!")
 
 
 # -------- 执行接口（文件上传版） --------
-@app.post("/run")
-async def run_facefusion(
+@app.post("/faceswap", summary="人脸替换接口", description="上传源图片和目标图片，返回换脸后的图片")
+async def run_faceswap(
     source_file: UploadFile = File(..., description="源图片（人脸）"),
     target_file: UploadFile = File(..., description="目标图片（要换脸的对象）"),
-    options: Optional[str] = None
+    face_swapper_model: FaceSwapperModel = Query(
+        FaceSwapperModel.hyperswap_1a_256,
+        title="人脸替换模型",
+        description=(
+            "选择人脸替换使用的模型。\n\n"
+            "推荐：\n"
+            "- 快速：inswapper_128 / inswapper_128_fp16\n"
+            "- 常规：hyperswap_1a_256 \n"
+            "- 高质量： hyperswap_1c_256\n"
+        )
+    )
 ):
     """
     上传源图片和目标图片，返回换脸后的图片
@@ -107,13 +131,13 @@ async def run_facefusion(
         raise HTTPException(500, f"保存文件失败: {str(e)}")
     
     # 解析选项
-    option_dict = {}
-    if options:
-        try:
-            import json
-            option_dict = json.loads(options)
-        except:
-            pass
+    # option_dict = {}
+    # if options:
+    #     try:
+    #         import json
+    #         option_dict = json.loads(options)
+    #     except:
+    #         pass
     
     # 准备参数
     args = setup_args()
@@ -121,16 +145,19 @@ async def run_facefusion(
     args["source_paths"] = [str(source_path)]
     args["target_path"] = str(target_path)
     args["output_path"] = str(output_path)
+
+    face_swapper_args = gen_faceswapper_model_args(face_swapper_model.value)
+    args.update(face_swapper_args)
     
-    # 应用用户选项
-    for k, v in option_dict.items():
-        if k in args:  # 只覆盖存在的参数
-            args[k] = v
+    # # 应用用户选项
+    # for k, v in option_dict.items():
+    #     if k in args:  # 只覆盖存在的参数
+    #         args[k] = v
     
     try:
         # 初始化并执行
         apply_args(args, state_manager.init_item)
-        result = process_headless_v2(args)
+        result = process_headless(args)
         
         # 检查输出文件是否存在
         if not os.path.exists(output_path):
@@ -194,12 +221,12 @@ async def run_facefusion(
 # -------- 健康检查 --------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "facefusion-api"}
+    return {"status": "ok", "service": "faceswap-api"}
 
 
 # -------- 主入口 --------
 if __name__ == "__main__":
-    print("🚀 Starting FaceFusion API on 0.0.0.0:6006 ...")
+    print("🚀 Starting faceswap API on 0.0.0.0:6006 ...")
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
